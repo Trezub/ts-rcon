@@ -2,12 +2,13 @@ import * as events from 'events';
 import * as net from 'net';
 import * as dgram from 'dgram';
 import { Buffer } from 'buffer';
+import { TypedEmitter } from 'tiny-typed-emitter';
 
-const PacketType = {
-    COMMAND: 0x02,
-    AUTH: 0x03,
-    RESPONSE_VALUE: 0x00,
-    RESPONSE_AUTH: 0x02,
+enum PacketType {
+    COMMAND = 0x02,
+    AUTH = 0x03,
+    RESPONSE_VALUE = 0x00,
+    RESPONSE_AUTH = 0x02,
 };
 
 interface Options {
@@ -16,11 +17,22 @@ interface Options {
     id?: number;
 }
 
-export class Rcon extends events.EventEmitter {
+export interface RconEvents {
+    'error': (err: any) => any;
+    'server': (str: string) => any;
+    'response': (str: string) => any;
+    'auth': () => any;
+    /**
+     * emitted when connected to socket
+     */
+    'connect': () => any;
+    'end': () => any;
+}
+
+export class Rcon extends TypedEmitter<RconEvents> {
     private host: string;
     private port: number;
     private password: string;
-    private rconId: number;
     private hasAuthed: boolean;
     private outstandingData: Uint8Array | null;
     private tcp: boolean;
@@ -28,6 +40,13 @@ export class Rcon extends events.EventEmitter {
     private _challengeToken: string;
     private _tcpSocket!: net.Socket;
     private _udpSocket!: dgram.Socket;
+    private _runningCommands!: Map<
+    number,
+    {
+      resolve: (result: string | undefined) => void;
+      reject: (err: any) => void;
+    }
+  >;
 
     constructor(host: string, port: number, password: string, options?: Options) {
         super();
@@ -35,21 +54,21 @@ export class Rcon extends events.EventEmitter {
         this.host = host;
         this.port = port;
         this.password = password;
-        this.rconId = options.id || 0x0012d4a6; // This is arbitrary in most cases
         this.hasAuthed = false;
         this.outstandingData = null;
         this.tcp = options.tcp ? options.tcp : true;
         this.challenge = options.challenge ? options.challenge : true;
         this._challengeToken = '';
+        this._runningCommands = new Map();
 
         events.EventEmitter.call(this);
     }
 
-    public send = (data: string, cmd?: number, id?: number): void => {
+    public send = async (data: string, cmd?: PacketType): Promise<string | undefined> => {
         let sendBuf: Buffer;
+        const id = Math.round(Math.random() * 0x7FFFFFFF);
         if (this.tcp) {
             cmd = cmd || PacketType.COMMAND;
-            id = id || this.rconId;
 
             const length = Buffer.byteLength(data);
             sendBuf = Buffer.alloc(length + 14);
@@ -58,6 +77,16 @@ export class Rcon extends events.EventEmitter {
             sendBuf.writeInt32LE(cmd, 8);
             sendBuf.write(data, 12);
             sendBuf.writeInt16LE(0, length + 12);
+
+            this._sendSocket(sendBuf);
+            const promise = new Promise<string | undefined>((resolve, reject) => {
+                this._runningCommands.set(id, {
+                    reject,
+                    resolve,
+                });
+            });
+            
+            return promise;
         } else {
             if (this.challenge && !this._challengeToken) {
                 this.emit('error', new Error('Not authenticated'));
@@ -70,8 +99,9 @@ export class Rcon extends events.EventEmitter {
             sendBuf = Buffer.alloc(4 + Buffer.byteLength(str));
             sendBuf.writeInt32LE(-1, 0);
             sendBuf.write(str, 4);
+            this._sendSocket(sendBuf);
+            return Promise.resolve(undefined);
         }
-        this._sendSocket(sendBuf);
     };
 
     private _sendSocket = (buf: Buffer) => {
@@ -168,7 +198,7 @@ export class Rcon extends events.EventEmitter {
             const type = data.readInt32LE(8);
 
             if (len >= 10 && data.length >= len + 4) {
-                if (id === this.rconId) {
+                if (this._runningCommands.has(id)) {
                     if (!this.hasAuthed && type === PacketType.RESPONSE_AUTH) {
                         this.hasAuthed = true;
                         this.emit('auth');
@@ -182,10 +212,19 @@ export class Rcon extends events.EventEmitter {
                             str = str.substring(0, str.length - 1);
                         }
 
-                        this.emit('response', str);
+                        this._runningCommands.get(id)?.resolve(str);
+                        this._runningCommands.delete(id);
                     }
-                } else {
+                } else if (id === -1) {
                     this.emit('error', new Error('Authentication failed'));
+                } else {
+                    let str = data.toString('utf8', 12, 12 + len - 10);
+
+                    if (str.charAt(str.length - 1) === '\n') {
+                        // Emit the response without the newline.
+                        str = str.substring(0, str.length - 1);
+                    }
+                    this.emit('server', str);
                 }
 
                 data = data.slice(12 + len - 8);
