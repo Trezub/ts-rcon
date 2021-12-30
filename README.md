@@ -1,6 +1,6 @@
 # ts-rcon
 
-[![npm](https://img.shields.io/npm/v/ts-rcon)](https://www.npmjs.com/package/ts-rcon) [![CI](https://github.com/bmiddha/ts-rcon/actions/workflows/main.yml/badge.svg)](https://github.com/bmiddha/ts-rcon/actions/workflows/main.yml)
+[![npm](https://img.shields.io/npm/v/@trezub/ts-rcon)](https://img.shields.io/npm/v/@trezub/ts-rcon) [![CI](https://github.com/trezub/ts-rcon/actions/workflows/main.yml/badge.svg)](https://github.com/trezub/ts-rcon/actions/workflows/main.yml/badge.svg)
 
 ts-rcon is a simple library for connecting to RCON servers in node.js implemented in TypeScript.
 Based on [pushrax/node-rcon](https://github.com/pushrax/node-rcon).
@@ -24,21 +24,37 @@ Some games use TCP and some use UDP for their RCON implementation. To tell
 node-rcon which protocol to use, pass it an options object like so:
 
 ```javascript
-var options = {
+const options = {
   tcp: false, // false for UDP, true for TCP (default true)
   challenge: false, // true to use the challenge protocol (default true)
 };
-client = new Rcon(host, port, password, options);
+const client = new Rcon(host, port, password, options);
+
+client.on('auth', () => {
+    // Awaiting only works when using tcp
+    const players = await client.send('listplayers');
+    console.log(players);
+
+    // When using UDP, it should be used this way
+    client.on('response', (str) => {
+        console.log(str);
+    });
+    client.send('listplayers');
+});
+
+client.connect();
+
 ```
 
 Here's a non-exhaustive list of which games use which options:
 
-| Game             | Protocol | Challenge |
-| :--------------- | :------- | :-------- |
-| Any Source game  | TCP      | N/A       |
-| Minecraft        | TCP      | N/A       |
-| Any GoldSrc game | UDP      | Yes       |
-| Call of Duty     | UDP      | No        |
+| Game                  | Protocol | Challenge |
+| :---------------      | :------- | :-------- |
+| Any Source game       | TCP      | N/A       |
+| Minecraft             | TCP      | N/A       |
+| Any GoldSrc game      | UDP      | Yes       |
+| Call of Duty          | UDP      | No        |
+| Ark: Survival Evolved | TCP      | No        |
 
 Source games include CS:S, CS:GO, TF2, etc. GoldSrc games include CS 1.6, TFC,
 Ricochet (lol), etc.
